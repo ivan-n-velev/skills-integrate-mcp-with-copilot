@@ -5,11 +5,13 @@ A super simple FastAPI application that allows students to view and sign up
 for extracurricular activities at Mergington High School.
 """
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends, Cookie
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import RedirectResponse
 import os
+import json
 from pathlib import Path
+from typing import Optional
 
 app = FastAPI(title="Mergington High School API",
               description="API for viewing and signing up for extracurricular activities")
@@ -18,6 +20,16 @@ app = FastAPI(title="Mergington High School API",
 current_dir = Path(__file__).parent
 app.mount("/static", StaticFiles(directory=os.path.join(Path(__file__).parent,
           "static")), name="static")
+
+# Load teacher credentials from JSON file
+def load_teachers():
+    teachers_file = os.path.join(Path(__file__).parent, "teachers.json")
+    with open(teachers_file, "r") as f:
+        return json.load(f).get("teachers", [])
+
+teachers_list = load_teachers()
+# In-memory session storage (username -> logged in)
+logged_in_users = {}
 
 # In-memory activity database
 activities = {
@@ -83,14 +95,55 @@ def root():
     return RedirectResponse(url="/static/index.html")
 
 
+def authenticate_teacher(username: str, password: str) -> bool:
+    """Verify teacher credentials"""
+    for teacher in teachers_list:
+        if teacher["username"] == username and teacher["password"] == password:
+            return True
+    return False
+
+
+def is_teacher_logged_in(teacher_username: Optional[str] = None) -> bool:
+    """Check if a teacher is logged in"""
+    return teacher_username is not None and teacher_username in logged_in_users
+
+
+@app.post("/auth/login")
+def login(username: str, password: str):
+    """Teacher login endpoint"""
+    if authenticate_teacher(username, password):
+        logged_in_users[username] = True
+        return {"success": True, "message": f"Logged in as {username}", "username": username}
+    else:
+        raise HTTPException(status_code=401, detail="Invalid username or password")
+
+
+@app.post("/auth/logout")
+def logout(username: str):
+    """Teacher logout endpoint"""
+    if username in logged_in_users:
+        del logged_in_users[username]
+    return {"success": True, "message": "Logged out successfully"}
+
+
+@app.get("/auth/status")
+def get_auth_status(teacher_username: Optional[str] = None):
+    """Check authentication status"""
+    return {"is_authenticated": is_teacher_logged_in(teacher_username), "username": teacher_username}
+
+
 @app.get("/activities")
 def get_activities():
     return activities
 
 
 @app.post("/activities/{activity_name}/signup")
-def signup_for_activity(activity_name: str, email: str):
-    """Sign up a student for an activity"""
+def signup_for_activity(activity_name: str, email: str, teacher_username: Optional[str] = None):
+    """Sign up a student for an activity (requires authentication)"""
+    # Check if teacher is authenticated
+    if not is_teacher_logged_in(teacher_username):
+        raise HTTPException(status_code=403, detail="Only logged-in teachers can register students")
+    
     # Validate activity exists
     if activity_name not in activities:
         raise HTTPException(status_code=404, detail="Activity not found")
@@ -111,8 +164,12 @@ def signup_for_activity(activity_name: str, email: str):
 
 
 @app.delete("/activities/{activity_name}/unregister")
-def unregister_from_activity(activity_name: str, email: str):
-    """Unregister a student from an activity"""
+def unregister_from_activity(activity_name: str, email: str, teacher_username: Optional[str] = None):
+    """Unregister a student from an activity (requires authentication)"""
+    # Check if teacher is authenticated
+    if not is_teacher_logged_in(teacher_username):
+        raise HTTPException(status_code=403, detail="Only logged-in teachers can unregister students")
+    
     # Validate activity exists
     if activity_name not in activities:
         raise HTTPException(status_code=404, detail="Activity not found")
